@@ -1,0 +1,266 @@
+---
+title: "Activity Monitoring Data Analysis - PA1"
+author: "Gary A. Miller"
+date: "Friday, August 15, 2014"
+output:
+  html_document:
+    keep_md: yes
+---
+
+An analysis of data collected by a personal activity monitoring device between
+October and November of 2012.
+
+### Part A - Loading and pre-processing data ### 
+
+This code creates a folder named 'data' in the current directory if it does not
+already exist.
+
+```{r folder}
+if(!file.exists("data")) {
+    dir.create("data")
+}
+```
+
+The Activity dataset is downloaded, unzipped, and stored in the Data folder. 
+
+```{r download}
+zipUrl <- "http://d396qusza40orc.cloudfront.net/repdata%2Fdata%2Factivity.zip"
+download.file(zipUrl,destfile="./data/ActivityMonitoringData.zip")
+unzip("./data/ActivityMonitoringData.zip",exdir="./data",overwrite=TRUE)
+
+DownloadDate <- format(Sys.Date(),"%B %d %Y")
+
+```
+
+I downloaded the data on `r DownloadDate`.
+
+Next, I read the data into R and took a high-level overview. 
+
+```{r readexplore}
+Activity <- read.csv("./data/activity.csv")
+
+str(Activity)
+summary(Activity)
+head(Activity,3)
+```
+
+The date column was read in as a factor variable; I converted the datatype to 
+Date.
+
+```{r ReformatDate}
+Activity$date <- as.Date(Activity$date)
+```
+
+### Part B - Mean and median total number of steps per day ###
+
+The Activity file gives a number of steps for each 5-minute interval for each
+day in the study.  To find the total number of steps per day (during every
+interval put together), I aggregated using functions from the reshape2 package.
+
+The na.rm parameter must be set equal to TRUE, as there are many missing values
+in the steps column.
+
+```{r sums}
+library(reshape2)
+
+DateStepsMelt <- melt(Activity,id="date",measure.vars="steps")
+DateStepsSums <- dcast(DateStepsMelt,date ~ variable,sum,na.rm=TRUE)
+
+head(DateStepsSums,3)
+```
+
+This histogram shows the distribution of full-day step counts in the dataset.
+The mean is more severely impacted by the comparatively high number of days with little to no activity recorded.
+
+```{r HistogramTotal}
+# Plot histogram
+hist(DateStepsSums$steps,main="Histogram of Total Steps Per Day",
+     xlab="Count of Steps",col="green",breaks=c(0,2500,5000,7500,10000,12500,
+    15000,17500,20000,22500,25000))
+
+# Calculate mean and median
+DateStepsMean <- round(mean(DateStepsSums$steps),2)
+DateStepsMedian <- median(DateStepsSums$steps)
+
+# Add mean and median to histogram
+abline(v=DateStepsMean,col="red")
+abline(v=DateStepsMedian,col="blue")
+```
+
+The mean total steps per day is `r DateStepsMean` and the median is 
+`r DateStepsMedian`.
+
+
+### Part C - Average Daily Activity Pattern ###
+
+To get an average number of steps for each of the 5-minute time intervals across
+the entire time period of the study, I again reshaped the Activity dataset. 
+
+This time, I aggregated by interval and applied the mean function (again setting
+na.rm equal to TRUE) to the step counts.  To make it clear that this value is 
+now a mean rather than an absolute count, I changed the column name.
+
+```{r}
+IntervalMelt <- melt(Activity,id="interval",measure.vars="steps")
+IntervalStepsMeans <- dcast(IntervalMelt,interval ~ variable,mean,na.rm=TRUE)
+names(IntervalStepsMeans)[2] <- "IntervalStepsMean"
+
+head(IntervalStepsMeans,3)
+
+```
+
+A plot helps to visualize the pattern of activity:
+
+```{r timeseriesplot}
+plot(IntervalStepsMeans$interval,IntervalStepsMeans$IntervalStepsMean,
+     type="l",col="blue",xlab="Interval",ylab="Mean Count of Steps",
+     main="Average Steps Per 5-Minute Interval")
+```
+
+The which.max function makes it easy to find the interval with the highest
+average number of steps.
+
+```{r IntervalMaxMean}
+X <- which.max(IntervalStepsMeans$IntervalStepsMean)
+Y <- IntervalStepsMeans$interval[X]
+```
+
+That interval, #`r Y`, matches what we see in the line plot.
+
+### Part D - Imputing missing Values ###
+
+As we saw in the initial summary, there are numerous NAs in the steps column in
+our dataset.
+
+``` {r countNA}
+NACount <- sum(is.na(Activity$steps))
+ObsCount <- round(NACount/nrow(Activity),2)
+```
+There are precisely `r NACount`, which is `r ObsCount` percent of the total.
+
+One approach to approximating these is to use the average for the interval,
+which we have already calcuated.  The original 'Activity' and averaged 
+'IntervalStepMeans' dataframes can merge based on the common Interval column.
+
+``` {r merge}
+ImputedActivity <- merge(Activity,IntervalStepsMeans,by="interval")
+
+head(ImputedActivity,3)
+```
+
+I created a logical vector and added it as a column to continue to show which 
+values were imputed after the NAs themselves have been overwritten.
+
+``` {r imputedcolumn}
+ImputedActivity$imputed <- is.na(ImputedActivity$steps)
+```
+
+This loop replaces NAs in the steps column with the value in the 
+IntervalStepsMean column in the same row.
+
+``` {r imputeloop}
+for (i in 1:nrow(ImputedActivity)) {
+    if (is.na(ImputedActivity$steps[i])==TRUE) {
+        ImputedActivity$steps[i] <- ImputedActivity$IntervalStepsMean[i]
+    }
+}
+
+head(ImputedActivity,3)
+```
+
+To confirm this worked, the NAs can be summed:
+
+``` {r NAcheck}
+Z <- sum(is.na(ImputedActivity$steps))
+```
+
+There are `r Z` NAs remaining in the steps column.
+
+For comparison with Part B, we can now create a new histogram of total step
+values and calculate an updated mean and median.
+
+```{r ImputedSums}
+
+ImpDateStepsMelt <- melt(ImputedActivity,id="date",measure.vars="steps")
+ImpDateStepsSums <- dcast(ImpDateStepsMelt,date ~ variable,sum)
+```
+
+```{r newHistogram}
+hist(ImpDateStepsSums$steps,main="Histogram of Values for Steps Per Day",
+     xlab="Count of Steps Per Day",col="orangered",
+     breaks=c(0,2500,5000,7500,10000,12500,15000,17500,20000,22500,25000))
+
+# Calculate new mean and median
+ImpDateStepsMean <- round(mean(ImpDateStepsSums$steps),2)
+ImpDateStepsMedian <- median(ImpDateStepsSums$steps)
+
+# Add new mean and median to histogram
+abline(v=ImpDateStepsMean,col="red")
+abline(v=ImpDateStepsMedian,col="blue")
+```
+
+Using the imputed values, the mean total number of steps per day increased from 
+`r DateStepsMean` to `r ImpDateStepsMean`, while the median increased from
+`r DateStepsMedian` to `r ImpDateStepsMedian`.  The number of observations in
+the lowest bin visibly decreased.
+
+### Part E - Weekend vs. Weekday Activity Patterns
+
+One question we can answer with this data is whether the participant activity changed noticeably between weekedays and weekends.  I added two new columns to 
+the Imputed Activity dataset - first the actual name of the day the observations were recorded, and then whether that was a weekday or weekend ('daytype').
+
+``` {r weekdayvariables}
+ImputedActivity$dayname <- weekdays(ImputedActivity$date)
+ImputedActivity$daytype <- as.factor(ifelse(ImputedActivity$dayname %in%
+                            c("Saturday","Sunday"),"Weekend","Weekday"))
+```
+
+The dataframe was reordered during the merge; here I am resorting by date.
+
+``` {r re-sort}
+ImputedActivity <- ImputedActivity[order(ImputedActivity$date),]
+head(ImputedActivity,3)
+```
+
+To aggregate the imputed steps by daytype and also 5-minute interval (again 
+across the full timespan of the study), I apply the mean function while
+reshaping with two id variables.
+
+``` {r DaytypeIntervalMean}
+
+ImpDaytypeIntervalMelt <- melt(ImputedActivity,id.vars=c("daytype","interval"),
+                               measure.vars="steps")
+ImpDaytypeIntervalMeans <- dcast(ImpDaytypeIntervalMelt,daytype + interval
+                                 ~ variable,mean)
+
+names(ImpDaytypeIntervalMeans)[3] <- "Mean"
+
+head(ImpDaytypeIntervalMeans,3)
+```
+
+This visualization indicates that activity peaks during the same interval both during the week and on weekends.  It also appears that this peak is lower during
+weekends.  Activity during the week is centered around four fairly evenly spaced
+spikes while weekend activity has more overall variability. 
+
+``` {r ggplot}
+
+library(ggplot2)
+
+g <- ggplot(ImpDaytypeIntervalMeans,aes(interval,Mean))
+
+p <- g + facet_grid(daytype ~ .) +
+    geom_line(aes(color=daytype)) +
+    labs(x="Interval") +
+    labs(y="Average Mean Steps") + 
+    labs(title="Average Mean Steps per Interval by Type of Day") + 
+    theme(legend.position="none")
+
+print(p)
+```
+
+### Citations ###
+
+For more information on the Data Science Specialization and the Reproducible
+Research course, please see:
+
+https://www.coursera.org/course/repdata
