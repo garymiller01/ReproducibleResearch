@@ -1,0 +1,288 @@
+---
+title: "Storm Event Economic and Human Costs in the US, 1961-2011"
+author: "Gary A. Miller"
+date: "Friday, August 22, 2014"
+output: html_document
+---
+
+### Synopsis ###
+
+This report describes an analysis of data from the US NOAA's 
+<a href="http://www.ncdc.noaa.gov/">National Climactic Data Center</a>.  The goal
+is to determine which types of storm events have caused the most damage to 
+property and to human life.
+
+### Data Processing ###
+
+#### Loading and Pre-processing the Data ####
+
+This code creates a folder for the data to be stored in if it does not
+already exist.
+
+```{r folder}
+if(!file.exists("data")) {
+dir.create("data")
+}
+```
+
+This code downloads the file into the Data folder.  The Download Date is also 
+recorded.
+
+```{r download}
+FileUrl <- "http://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+download.file(FileUrl,destfile="./data/StormData.csv.bz2")
+
+DownloadDate <- format(Sys.Date(),"%B %d %Y")
+```
+
+These results are effective as of `r DownloadDate`.
+
+The next step is to read in the data.
+
+``` {r read, cache=TRUE}
+StormData <- read.csv(bzfile("./data/StormData.csv.bz2"))
+```
+
+Initial exploration shows that this is a fairly large dataset, which includes 
+some attributes that are not useful to our specific analysis.
+
+``` {r explore}
+dim(StormData)
+names(StormData)
+```
+
+My first transformation is to change the datatype of the Date column from factor
+to POSIXlt, and to extract just the year into a new column. 
+
+```{r datetransform}
+StormData$BGN_DATE <- strptime(StormData$BGN_DATE,format="%m/%d/%Y")
+StormData$BGN_YEAR <- format(StormData$BGN_DATE,"%Y")
+```
+
+This analysis is unavoidably shaped by the fact that much more data exists for 
+events in more recent years.  While data exists from events as far back as 1950,
+I removed data from 1960 and earlier.
+
+```{r yearsubset}
+StormData <- StormData[StormData$BGN_YEAR>=1961,]
+```
+
+```{r yearplot}
+library(ggplot2)
+library(scales)
+    
+h <- ggplot(StormData,aes(x=BGN_YEAR))
+h2 <- h + geom_histogram(fill="blue") +
+    scale_x_discrete(breaks=seq(1961,2011,5)) +
+     labs(x="Year",y="Number of Storms",
+          title="Number of Storms by Year, 1961 - 2011")
+
+print(h2)
+```
+
+The table below shows the number of storms identified as having taken place in
+each state.  I removed those not placed in one of the fifty US states or in the
+District of Columbia.
+
+```{r statesubset}
+table(StormData$STATE)
+
+States <- c("AK","AL","AR","AZ","CA","CO","CT","DC","DE","FL","GA","HI","IA",
+            "ID","IL","IN","KS","KY","LA","MA","MD","ME","MI","MN","MO","MS",
+            "MT","NC","ND","NE","NH","NJ","NM","NV","NY","OH","OK","OR","PA",
+            "RI","SC","SD","TN","TX","UT","VA","VT","WA","WI","WV","WY")
+
+StormData <- StormData[StormData$STATE %in% States,]
+```
+
+Many variables in this dataset are not needed to answer these specific 
+questions.  I removed unnecessary columns.
+
+```{r columnsubset}
+KeepCols <- c("EVTYPE","BGN_YEAR","FATALITIES","INJURIES","PROPDMG",
+              "PROPDMGEXP","CROPDMG","CROPDMGEXP")
+
+StormData <- StormData[,names(StormData) %in% KeepCols]
+```
+
+The titles given to each event (EVTYPE) have not been applied consistently. 
+The next set of code creates a new EVLABEL column, sets 'other' as the default,
+and then assigns names based on a series of regular expression searches.
+
+```{r eventtype}
+InitEventTypeCount <- length(unique(StormData$EVTYPE))
+
+StormData$EVTYPE <- toupper(StormData$EVTYPE)
+
+StormData$EVLABEL <- "OTHER"
+StormData$EVLABEL[grepl("FIRE",StormData$EVTYPE)] <- "FIRE"
+StormData$EVLABEL[grepl("DUST",StormData$EVTYPE)] <- "DUST"
+StormData$EVLABEL[grepl("FLOOD|SURGE",StormData$EVTYPE)] <- "FLOOD"
+StormData$EVLABEL[grepl("HAIL",StormData$EVTYPE)] <- "HAIL"
+StormData$EVLABEL[grepl("WIND",StormData$EVTYPE)] <- "HIGH WIND"
+StormData$EVLABEL[grepl("WARM|HOT|DROUGHT|DRY|DRI|HEAT|HIGH",
+                        StormData$EVTYPE)] <- "HEAT"
+StormData$EVLABEL[grepl("COLD|FROST",StormData$EVTYPE)] <- "COLD"
+StormData$EVLABEL[grepl("SNOW|BLIZZARD|WINT*MIX|WINT*STOR|ICE",
+                        StormData$EVTYPE)] <- "SNOWSTORM"
+StormData$EVLABEL[grepl("TORN|SPOUT|WALL|FUNNEL",
+                        StormData$EVTYPE)]<-"TORNADO"
+StormData$EVLABEL[grepl("HURRICANE|TYPHOON|TROP",
+                        StormData$EVTYPE)]<-"HURRICANE"
+StormData$EVLABEL[grepl("THUN|TSTM|MICROB|RAIN",
+                        StormData$EVTYPE)] <- "THUNDERSTORM"
+
+table(StormData$EVLABEL)
+FinalEventLabelCount <- length(unique(StormData$EVLABEL))
+
+```
+
+There were initially `r InitEventTypeCount` variations of event type spellings; 
+the filtering above reduces that number to `r FinalEventLabelCount`.  Although 
+the number of 'Other' responses remaining indicates that this process is 
+inexact.  
+
+#### Analysis - Human Casualties ####
+
+Combining fatality counts with injury counts yields a new column with a total 
+number of casualties for each storm event.  This is the ultimate measure of 
+population impact for this analysis.
+
+```{r casualtycount}
+StormData$CASUALTIES <- StormData$INJURIES + StormData$FATALITIES
+```
+
+Reshaping the data by both the fatality and injury variables allows for the 
+human impact to be visualized with a stacked barplot later on in this report.
+
+```{r casualtymelt}
+library(reshape2)
+
+StormCasualtyMelt <- melt(StormData,id="EVLABEL",measure.vars=
+                        c("FATALITIES","INJURIES"))
+```
+
+#### Analysis - Property Damage ####
+
+The documentation explains that the Property Damage Exponent corresponds to the
+degree of magnitude to apply to the amount given in the Property Damage column.
+I created a new 'Multiplier' column and populated it with the corresponding 
+amount, with 1 as the default.  I then multiplied the multiplier by the estimate
+to get a total damage amount. 
+
+```{r PropertyDamage}
+
+table(StormData$PROPDMGEXP)
+
+# Populate multiplier values based on code
+
+StormData$PROPDMGMULTIPLIER <- as.numeric(1) 
+
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="K"|
+                            StormData$PROPDMGEXP=="k"|
+                            StormData$PROPDMGEXP=="3"] <- 1000
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="4"] <- 10000
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="5"] <- 100000
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="M"|
+                            StormData$PROPDMGEXP=="m"|
+                            StormData$PROPDMGEXP=="6"] <- 1000000
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="7"] <- 10000000
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="8"] <- 100000000
+StormData$PROPDMGMULTIPLIER[StormData$PROPDMGEXP=="B"] <- 1000000000
+
+# Calculate total property damage
+
+StormData$PROPDMGTOTAL <- StormData$PROPDMG * StormData$PROPDMGMULTIPLIER
+```
+
+The same process works for finding the amount of crop damage.
+
+```{r CropExp}
+table(StormData$CROPDMGEXP)
+
+# Populate multiplier values based on code
+
+StormData$CROPDMGMULTIPLIER <- as.numeric(1)
+
+StormData$CROPDMGMULTIPLIER[StormData$CROPDMGEXP=="2"] <- 100
+StormData$CROPDMGMULTIPLIER[StormData$CROPDMGEXP=="K"|
+                            StormData$CROPDMGEXP=="k"] <- 1000
+StormData$CROPDMGMULTIPLIER[StormData$CROPDMGEXP=="M"|
+                            StormData$CROPDMGEXP=="m"] <- 1000000
+StormData$CROPDMGMULTIPLIER[StormData$CROPDMGEXP=="B"] <- 1000000000
+
+# Calculate total crop Damage
+
+StormData$CROPDMGTOTAL <- StormData$CROPDMG * StormData$CROPDMGMULTIPLIER
+```
+
+Now the total amount of property damage can be calculated by adding the property
+damage total to the crop damage total.
+
+```{r rearrange}
+StormData$TOTALDAMAGE <- StormData$PROPDMGTOTAL + StormData$CROPDMGTOTAL
+```
+
+Here's a look at the final dataset before aggregating.
+
+```{r StormData}
+head(StormData,5)
+```
+
+As with the casualty metric, I reshaped the data based on the totals for crop 
+and property damage.
+
+```{r meltProperty}
+StormEcoMelt <- melt(StormData,id="EVLABEL",measure.vars=
+                         c("CROPDMGTOTAL","PROPDMGTOTAL"))
+```
+### Results ###
+
+Tornados are far and away the storm event type that cause the most damage to 
+human life.
+
+```{r plotcasualties}
+c <- ggplot(StormCasualtyMelt,aes(x=EVLABEL,y=value,fill=variable))
+
+c2 <- c + geom_bar(stat="identity") + 
+    labs(x="Event Type",y="Number of Casualties") + 
+    labs(title="Combined Fatalities and Injuries by Event Type") +
+    scale_fill_manual(values=c("#e34a33","#fdcc8a"),name="Casualty Type") +
+    scale_y_continuous(label=comma) +
+    theme(axis.text.x = element_text(angle=90))
+
+print(c2)
+```
+
+Floods have cause the most damage to property.
+
+It's also interesting to note the comparatively high percentage of damage that
+the heat / drought events have done to crops rather than other types of physical
+property.
+
+```{r plotproperty}
+p <- ggplot(StormEcoMelt,aes(x=EVLABEL,y=value,fill=variable))
+
+p2 <- p + geom_bar(stat="identity") + 
+    labs(x="Event Type",y="Total Property and Crop Damage ($US)") +
+    labs(title="Property Damage by Event Type") +
+    scale_fill_manual(values=c("#2ca25f","#fecc5c"),name="Damage Type",
+                      labels=c("CROP","PROPERTY")) + 
+    scale_y_continuous(label=comma) +
+    theme(axis.text.x = element_text(angle=90))
+
+print(p2)
+```
+
+### References ###
+
+This analysis was completed as an assignment in 
+<a href="https://www.coursera.org/course/repdata">Reproducible Research</a>,
+part of the Data Science Specialization offered by Johns Hopkins University via 
+the Coursera platform.
+
+The NCDC's 
+<a href="https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf">Storm Center FAQ</a> and the National Weather Service's <a href="https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf">documentation</a> explain the definitions of each variable and how the data was compiled.
+
+Additional data can be obtained from the Storm Events 
+<a href="http://www.ncdc.noaa.gov/stormevents">database</a>.
